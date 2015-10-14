@@ -1,0 +1,139 @@
+---
+title: "Weight Lifting Data Analysis"
+author: "Xuhui Chen"
+date: "October 14, 2015"
+output: html_document
+---
+
+In this report I build a random forest model using the data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants in performing the weight lifting exercise in 5 different manners, among which only one is correct (See http://groupware.les.inf.puc-rio.br/har).
+We use this model to identify in which manner the exercise is performed in 20 test observations. The feature selection is done with a simple decision tree, and 13 important features are selected. A 4-fold cross-validation is performed to assess the accuracy of the model, and the model is found to be incredibly accurate.
+
+First, download the data sets when they are not in the local directory, and load in the data.
+```{r download and read data}
+if(!file.exists("pml_training.csv")){
+  download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv","pml_training.csv",method="curl")
+}
+if(!file.exists("pml_testing.csv")){
+  download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv","pml_testing.csv",method="curl")
+}
+training.raw = read.csv("pml_training.csv")
+testing.raw = read.csv("pml_testing.csv")
+```
+
+Let's look at some general feature of the data set:
+```{r explore}
+dim(training.raw)
+table(sapply(training.raw,class))
+```
+
+We can see this is a relatively large data set. The variables contain numerics, integers, and factors.
+
+For this analysis, I ignore the categorical variables in this dataset for simplicity.
+The first variable is the order of the data set, which immediately identify the class of each observation because the data is ordered according to the class of the exercise. So we ignore the first variable for our model building.
+```{r nofactor}
+col.num = sapply(training.raw,class) %in% c("numeric","integer")
+col.num[1] = FALSE
+training.num = training.raw[,col.num]
+testing.num = testing.raw[,col.num]
+training.classe = training.raw$classe
+```
+qplot()
+By checking the NA values in the remaining numerical (numeric and integer) data
+```{r checknas}
+table(colSums(is.na(training.num)))
+```
+
+we can see there are still a lot of NA values in the data set, which random forest does not handle directly.
+
+So the next important thing is to impute the missing values with the median of each variable.
+```{r imputation, message=FALSE}
+library(Hmisc)
+training.imp = as.matrix(impute(training.num,fun=median))
+testing.imp = as.matrix(impute(testing.num,fun=median))
+```
+
+
+```{r exist, echo = FALSE}
+# The feature selection, cross-validation and model building is saved after the first time it is performed, to save computing time. The random forest algorithm takes quite some time to run on this data set.
+if(!file.exists("feature.selection.save")){
+  eval.feature = TRUE
+}else{
+  load("feature.selection.save")
+  eval.feature = FALSE
+}
+if(!file.exists("cv.forest.save")){
+  eval.cv = TRUE
+}else{
+  load("cv.forest.save")
+  eval.cv = FALSE
+}
+if(!file.exists("final.forest.save")){
+  eval.final = TRUE
+}else{
+  load("final.forest.save")
+  eval.final = FALSE
+}
+```
+
+I use the caret package in R to perform the feature selection, cross-validation, and model building.
+I select the important features by running a decision tree on the entire imputed data, and preserve the 13 variables that are most important in predicting the manner by which the exercise is performed. A subset of the data with only the important variables is created.
+```{r freature.selection, eval=eval.feature}
+library(caret)
+set.seed(1781)
+feature.tree = train(training.imp,training.classe,"rpart")
+var.imp = varImp(feature.tree)
+```
+```{r createselected}
+var.imp
+var.sel = row.names(var.imp$importance)[order(var.imp$importance$Overall,decreasing = TRUE)[1:13]]
+training.sel = training.imp[,var.sel]
+testing.sel = testing.imp[,var.sel]
+```
+
+Now we have a more managable number of variables, we can make a exploratory plot to see the relationship between the exercise class and each variable
+```{r exploratory}
+par(mfrow=c(4,4),mar=c(3,3,1,1))
+for(ivar in 1:13){
+  plot(training.classe,training.sel[,ivar])
+}
+```
+
+There is no apparent problem with the data except one extreme value in the 4th plot. Since I do not know exactly the cause of this outlier, I am not doing anything about it.
+
+Then I run a 4-fold cross-validation with random forest on the data set.
+```{r crossvalidation, eval=eval.cv}
+  set.seed(9909)
+  folds = createFolds(training.classe,k=4,list = TRUE,returnTrain = FALSE)
+  cv.forest = list()
+  acc.forest = c()
+  for(i in 1:4){
+    fitcv.rf = train(training.sel[-folds[[i]],],training.classe[-folds[[i]]],"rf")
+    validate.rf = predict(fitcv.rf,training.sel[folds[[i]],])
+    accuracy.rf = confusionMatrix(validate.rf,training.classe[folds[[i]]])$overall[[1]]
+    cv.forest = c(cv.forest,fitcv.rf)
+    acc.forest = c(acc.forest,accuracy.rf)
+  }
+```
+
+The accuracy of the random forest model on this weight lifting dataset, according to our cross-validation, is 
+```{r accuracy} 
+mean(acc.forest)
+```
+
+Now I build the final random forest model with all the training data, and predict the exercise class for the 20 test observations.
+```{r finalmodel, eval=eval.final}
+set.seed(200)
+fit.rf = train(training.sel,training.classe,"rf")
+```
+```{r predict}
+pred.rf = predict(fit.rf,testing.sel)
+pred.rf
+```
+
+The out of sample error of the model is expected to be $`r 1-mean(acc.forest)`$.
+
+```{r save, echo=FALSE}
+if(eval.feature)save(var.imp,file="feature.selection.save")
+if(eval.cv)save(cv.forest,acc.forest,file="cv.forest.save")
+if(eval.final)save(fit.rf,file="final.forest.save")
+```
